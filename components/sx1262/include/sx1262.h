@@ -5,6 +5,7 @@
 #include "freertos/queue.h" // Queues
 #include "math.h" // for pow()
 #include "driver/gpio.h" // For NSS or RESET
+#include <unistd.h>
 
 /*
  * OPCODES
@@ -110,20 +111,20 @@
 #define RX_CONTINUOUS_MODE 0xFFFFFF
 #define REGULATOR_LDO_ONLY 0
 #define REGULATOR_LDO_DC_DC 1
-#define CALIBRATE_RC64K 1 << 0
+#define CALIBRATE_RC64K 1
 #define CALIBRATE_RC13M 1 << 1
 #define CALIBRATE_PLL 1 << 2
 #define CALIBRATE_ADC_PULSE 1 << 3
 #define CALIBRATE_ADC_BULK_N 1 << 4
 #define CALIBRATE_ADC_BULK_P 1 << 5
 #define CALIBRATE_IMAGE 1 << 6
-#define PA_SX1261_15DBM 0x06, 0x00, 0x01, 0x01
-#define PA_SX1261_14DBM 0x04, 0x00, 0x01, 0x01
-#define PA_SX1261_10DBM 0x01, 0x00, 0x01, 0x01
-#define PA_SX1262_22DBM 0x04, 0x07, 0x00, 0x01
-#define PA_SX1262_20DBM 0x03, 0x05, 0x00, 0x01
-#define PA_SX1262_17DBM 0x02, 0x03, 0x00, 0x01
-#define PA_SX1262_14DBM 0x02, 0x02, 0x00, 0x01
+#define PA_SX1261_15DBM 0x06, 0x00, 0x01
+#define PA_SX1261_14DBM 0x04, 0x00, 0x01
+#define PA_SX1261_10DBM 0x01, 0x00, 0x01
+#define PA_SX1262_22DBM 0x04, 0x07, 0x00
+#define PA_SX1262_20DBM 0x03, 0x05, 0x00
+#define PA_SX1262_17DBM 0x02, 0x03, 0x00
+#define PA_SX1262_14DBM 0x02, 0x02, 0x00
 #define FALLBACK_FS 0x40
 #define FALLBACK_STDBY_XOSC 0x30
 #define FALLBACK_STDBY_RC 0x20
@@ -201,11 +202,11 @@
 #define LORA_CR_4_6_LI 0x06
 #define LORA_CR_4_8_LI 0x07
 
-#define PREAMBLE_OFF 0x00 
-#define PREAMBLE_SIZE_8 0x04
-#define PREAMBLE_SIZE_16 0x05
-#define PREAMBLE_SIZE_24 0x06
-#define PREAMBLE_SIZE_32 0x07
+#define PREAMBLE_RX_OFF 0x00 
+#define PREAMBLE_RX_8_BITS 0x04
+#define PREAMBLE_RX_16_BITS 0x05
+#define PREAMBLE_RX_24_BITS 0x06
+#define PREAMBLE_RX_32_BITS 0x07
 
 #define ADDRESS_FILTER_OFF 0x00
 #define ADDRESS_FILTER_NODE_ONLY 0x01
@@ -238,7 +239,7 @@
 #define CAD_ONLY 0x00
 #define CAD_RX 0x01
 
-#define IRQ_TXDONE 1 << 0
+#define IRQ_TXDONE 1
 #define IRQ_RXDONE 1 << 1
 #define IRQ_PREAMBLEDETECTED 1 << 2
 #define IRQ_SYNCWORDVALID 1 << 3
@@ -250,22 +251,25 @@
 #define IRQ_TIMEOUT 1 << 9
 #define IRQ_LRFHSSHOP 1 << 14
 
+#define RX_GAIN_POWER_SAVE 0x94
+#define RX_GAIN_POWER_BOOST 0x96
+
 /*
  * STATUS CODES
  */
-#define STATUS_DATA_AVAILABLE 0x2 
-#define STATUS_COMMAND_TIMEOUT 0x3
-#define STATUS_COMMAND_PROCESSING_ERROR 0x4 
-#define STATUS_COMMAND_EXECUTION_FAILURE 0x5 
-#define STATUS_COMMAND_TX_DONE 0x6
+// These are compound bit usage and exclusive
+#define STATUS_DATA_AVAILABLE 0x02 << 1
+#define STATUS_COMMAND_TIMEOUT 0x03 << 1
+#define STATUS_COMMAND_PROCESSING_ERROR 0x04 << 1
+#define STATUS_COMMAND_EXECUTION_FAILURE 0x05 << 1 
+#define STATUS_COMMAND_TX_DONE 0x06 << 1
+#define STATUS_STBY_RC 0x2 << 4
+#define STATUS_STBY_XOSC 0x3 << 4
+#define STATUS_FS 0x4 << 4
+#define STATUS_RX 0x5 << 4
+#define STATUS_TX 0x6 << 4
 
-#define STATUS_STBY_RC 0x2
-#define STATUS_STBY_XOSC 0x3 
-#define STATUS_FS 0x4
-#define STATUS_RX 0x5
-#define STATUS_TX 0x6
-
-#define RXSTATUS_FSK_PKT_SENT 1 << 0
+#define RXSTATUS_FSK_PKT_SENT 1
 #define RXSTATUS_FSK_PKT_RECEIVED 1 << 1
 #define RXSTATUS_FSK_ABORT_ERR 1 << 2
 #define RXSTATUS_FSK_LENGTH_ERR 1 << 3
@@ -274,7 +278,7 @@
 #define RXSTATUS_FSK_SYNC_ERR 1 << 6
 #define RXSTATUS_FSK_PREAMBLE_ERR 1 << 7
 
-#define OPERROR_RC64K_CALIB_ERR 1 << 0
+#define OPERROR_RC64K_CALIB_ERR 1
 #define OPERROR_RC13M_CALIB_ERR 1 << 1
 #define OPERROR_PLL_CALIB_ERR 1 << 2
 #define OPERROR_ADC_CALIB_ERR 1 << 3
@@ -284,10 +288,10 @@
 #define OPERROR_PA_RAMP_ERR 1 << 8
 
 /**
- * SPI transaction to receive data from an address
+ * Base SPI transaction function for SX126x
  * 
  * @param spi SPI Handle
- * @param busy GPIO pin read to indicate if chip is busy
+ * @param busy_pin GPIO pin read to indicate if chip is busy_pin
  * @param cmd Opcode to be executed
  * @param addrlen Length of address in bytes
  * @param addr Address to call
@@ -295,59 +299,47 @@
  * @param len Length of data to be transferred
  * @param buf Pointer to data storage
  */
-uint8_t sx126x_spi_transaction(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd, uint8_t addrlen, uint16_t addr, bool rx_op, uint8_t len, uint8_t *buf);
+void sx126x_spi_transaction(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd, uint8_t addrlen, uint16_t addr, uint8_t rx_op, uint8_t len, uint8_t *buf);
 
 /**
- * SPI transaction to execute an opcode
+ * @brief SPI transaction wrapper to execute an Opcode
  * 
  * @param spi SPI Handle
  * @param cmd Opcode to be executed
  */
-void sx126x_cmd(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd);
+void sx126x_cmd(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd);
 
 /**
- * SPI transaction to transmit byte via an opcode
+ * @brief SPI transaction wrapper to transmit byte via an Opcode
  * 
  * @param spi SPI Handle
  * @param cmd Opcode to be executed
  * @param buf Byte to transmit
  */
-void sx126x_cmd_tx(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd, uint8_t buf);
+void sx126x_cmd_tx(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd, uint8_t buf);
 
 /**
- * SPI transaction to transmit data via an opcode
+ * @brief SPI transaction wrapper to transmit data via an Opcode
  * 
  * @param spi SPI Handle
  * @param cmd Opcode to be executed
  * @param len Length of data to be transferred
  * @param buf Pointer to data storage
  */
-void sx126x_cmd_txbuf(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd, uint8_t len, uint8_t *buf);
+void sx126x_cmd_txbuf(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd, uint8_t len, uint8_t *buf);
 
 /**
- * SPI transaction to receive data via an opcode
+ * @brief SPI transaction wrapper to receive data via an Opcode
  * 
  * @param spi SPI Handle
  * @param cmd Opcode to be executed
  * @param len Length of data to be transferred
  * @param buf Pointer to data storage
  */
-void sx126x_cmd_rxbuf(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd, uint8_t len, uint8_t *buf);
+void sx126x_cmd_rxbuf(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd, uint8_t len, uint8_t *buf);
 
 /**
- * SPI transaction to transmit data to an address
- * 
- * @param spi SPI Handle
- * @param cmd Opcode to be executed
- * @param addrlen Length of address in bytes
- * @param addr Address to call
- * @param len Length of data to be transferred
- * @param buf Pointer to data storage
- */
-void sx126x_cmd_addr_txbuf(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd, uint8_t addrlen, uint16_t addr, uint8_t len, uint8_t *buf);
-
-/**
- * SPI transaction to receive data from an address
+ * @brief SPI transaction wrapper to transmit data to an address
  * 
  * @param spi SPI Handle
  * @param cmd Opcode to be executed
@@ -356,143 +348,273 @@ void sx126x_cmd_addr_txbuf(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd
  * @param len Length of data to be transferred
  * @param buf Pointer to data storage
  */
-void sx126x_cmd_addr_rxbuf(spi_device_handle_t spi, gpio_num_t busy, uint8_t cmd, uint8_t addrlen, uint16_t addr, uint8_t len, uint8_t *buf);
+void sx126x_cmd_addr_txbuf(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd, uint8_t addrlen, uint16_t addr, uint8_t len, uint8_t *buf);
 
 /**
- * 0x02 - ClearIRQStatus - Clear IRQ Status for main IRQ
+ * @brief SPI transaction wrapper to receive data from an address
+ * 
+ * @param spi SPI Handle
+ * @param cmd Opcode to be executed
+ * @param addrlen Length of address in bytes
+ * @param addr Address to call
+ * @param len Length of data to be transferred
+ * @param buf Pointer to data storage
+ */
+void sx126x_cmd_addr_rxbuf(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t cmd, uint8_t addrlen, uint16_t addr, uint8_t len, uint8_t *buf);
+
+/**
+ * @brief Clear one of the several of the IRQs
+ * 
+ *- Command: `ClearIRQStatus`
+ *
+ *- Opcode: `0x02`
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ */
+void clearIRQStatus(spi_device_handle_t spi, gpio_num_t busy_pin);
+
+/**
+ * @brief Clear all the errors (on the device)
+ * 
+ *- Command: `ClearDeviceErrors`
+ * 
+ *- Opcode: `0x07` 
  * 
  * @param spi SPI Handle
  */
-void clearIRQStatus(spi_device_handle_t spi, gpio_num_t busy);
+void clearDeviceErrors(spi_device_handle_t spi, gpio_num_t busy_pin);
 
 /**
- * 0x07 - ClearDeviceErrors - Clear device errors
+ * @brief Configure the IRQ and the DIOs attached to each IRQ
+ * 
+ *- Command: `SetDioIrqParams`
+ * 
+ *- Opcode: `0x08`
  * 
  * @param spi SPI Handle
- */
-void clearDeviceErrors(spi_device_handle_t spi, gpio_num_t busy);
-
-/**
- * 0x08 - SetDIOIRQParams - Set DIO IRQ Parameters
- * 
- * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param irq_main 16-bit mask for main IRQ
  * @param irq_dio1 16-bit mask for DIO1
  * @param irq_dio2 16-bit mask for DIO2
  * @param irq_dio3 16-bit mask for DIO3
  */
-void setDioIrqParams(spi_device_handle_t spi, gpio_num_t busy, uint16_t irq_main, uint16_t irq_dio1, uint16_t irq_dio2, uint16_t irq_dio3 );
+void setDioIrqParams(spi_device_handle_t spi, gpio_num_t busy_pin, uint16_t irq_main, uint16_t irq_dio1, uint16_t irq_dio2, uint16_t irq_dio3 );
 
 /**
- * 0x0D - WriteRegister - Transmit data to a register address
+ * @brief Write into one or several registers
+ * 
+ *- Command: `WriteRegister`
+ * 
+ *- Opcode: `0x0D`
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param addr Register address to write to
  * @param length Length of data to be transferred
  * @param data Pointer to data storage
  */
-void writeRegister(spi_device_handle_t spi, gpio_num_t busy, uint16_t addr, uint8_t length, uint8_t *data);
+void writeRegister(spi_device_handle_t spi, gpio_num_t busy_pin, uint16_t addr, uint8_t length, uint8_t *data);
 
 /**
- * 0x12 - GetIRQStatus - Get IRQ Status for main IRQ
+ * @brief Write data into the FIFO
+ * 
+ *- Command: `WriteBuffer`
+ * 
+ *- Opcode: `0x0E`
  * 
  * @param spi SPI Handle
- * @return `uint16_t` - IRQ state
- */
-uint16_t getIRQStatus(spi_device_handle_t spi, gpio_num_t busy);
-
-/**
- * 0x13 - GetRxBufferStatus - Return the status of the buffer from an RX perspective
- * 
- * @param spi SPI Handle
- * @returns `uint8_t | uint8_t` - length, offset
- */
-uint16_t getRxBufferStatus(spi_device_handle_t spi, gpio_num_t busy);
-
-/**
- * 0x14 - GetPacketStatus - Return the status of the packet engine, but in reverse byte order
- * 
- * @param spi SPI Handle
- * @returns `uint8_t | uint8_t | uint8t` - RssiAvg, RssiSync, RxStatus
- */
-uint32_t getPacketStatus(spi_device_handle_t spi, gpio_num_t busy);
-
-/**
- * 0x1D - ReadRegister - Receive data from a register address
- * 
- * @param spi SPI Handle
- * @param addr Register address to read from
- * @param length Length of data to be transferred
- * @param data Pointer to data storage
- */
-void readRegister(spi_device_handle_t spi, gpio_num_t busy, uint16_t addr, uint8_t length, uint8_t *data);
-
-/**
- * 0x1E - ReadBuffer - Receive data from an offset in the buffer
- * 
- * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param offset Offset from start position in buffer
  * @param length Length of data to be transferred
  * @param data Pointer to data storage
  */
-void readBuffer(spi_device_handle_t spi, gpio_num_t busy, uint8_t offset, uint8_t length, uint8_t *data);
+void writeBuffer(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t offset, uint8_t length, uint8_t *data);
 
 /**
- * 0x1F - SetBufferBaseAddress - Set the boundaries in the buffer for tx and rx
+ * @brief Get the values of the triggered IRQs
+ * 
+ *- Command: `GetIrqStatus`
+ * 
+ *- Opcode: `0x12`
  * 
  * @param spi SPI Handle
- * @param tx_addr TX base address in buffer
- * @param rx_addr RX base address in buffer
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @return 
+ * - IrqStatus (15:0)
  */
-void setBufferBaseAddress(spi_device_handle_t spi, gpio_num_t busy, uint8_t tx_addr, uint8_t rx_addr);
+uint16_t getIRQStatus(spi_device_handle_t spi, gpio_num_t busy_pin);
 
 /**
- * 0x80 - SetStandby - Puts the chip into a specific mode
+ * @brief   Returns PayloadLengthRx(15:8), RxBufferPointer(7:0)
+ * 
+ * - Command: `GetRxBufferStatus`
+ * 
+ * - Opcode: `0x13`
+ * 
+ * @param   spi SPI Handle
+ * @param   busy_pin GPIO pin used to indicate the status of the internal state machine
+ * 
+ * @return `uint16_t` -
+ * PayloadLengthRx(15:8),
+ * RxBufferPointer(7:0)
+ */
+uint16_t getRxBufferStatus(spi_device_handle_t spi, gpio_num_t busy_pin);
+
+/**
+ * @brief   Returns RssiAvg, RssiSync, PStatus2, PStatus3, PStatus4 in FSK protocol.
+ *          Returns RssiPkt, SnrPkt in LoRa protocol.
+ * 
+ * - Command: `GetPacketStatus`
+ * 
+ * - Opcode: `0x14`
+ * 
+ * @param   spi SPI Handle
+ * @param   busy_pin GPIO pin used to indicate the status of the internal state machine
+ * 
+ * @return `uint32_t` -
+ * Empty(31:24),
+ * RxStatus(23:16), 
+ * RssiSync(15:8), 
+ * RssiAvg(7:0)
+ */
+uint32_t getPacketStatus(spi_device_handle_t spi, gpio_num_t busy_pin);
+
+/**
+ * @brief Return the error flags
+ * 
+ * - Command: `GetDeviceErrors`
+ * 
+ * - Opcode: `0x17`
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * 
+ * @return `uint16_t` -
+ * OpError(15:0)
+ */
+uint16_t getDeviceErrors(spi_device_handle_t spi, gpio_num_t busy_pin);
+
+/**
+ * @brief Read one or several registers
+ * 
+ * - Command: `ReadRegister`
+ * 
+ * - Opcode: `0x1D`
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param addr Register address to read from
+ * @param length Length of data to be transferred
+ * @param data Pointer to data storage
+ */
+void readRegister(spi_device_handle_t spi, gpio_num_t busy_pin, uint16_t addr, uint8_t length, uint8_t *data);
+
+/**
+ * @brief Read data from the FIFO
+ * 
+ * - Command: `ReadBuffer`
+ * 
+ * - Opcode: `0x1E`
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param offset Offset from start position in buffer
+ * @param length Length of data to be transferred
+ * @param data Pointer to data storage
+ */
+void readBuffer(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t offset, uint8_t length, uint8_t *data);
+
+/**
+ * @brief Set Chip in STDBY_RC or STDBY_XOSC mode
+ * 
+ * - Command: `SetStandby`
+ * 
+ * - Opcode: `0x80` 
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param stdbyconfig Standby mode
  */
-void setStandby(spi_device_handle_t spi, gpio_num_t busy, uint8_t stdbyconfig) ;
+void setStandby(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t stdbyconfig) ;
 
 /**
- * 0x82 - SetRx - Put chip into receive mode
+ * @brief Set Chip in Rx mode
+ * 
+ * - Command: `SetRx`
+ * 
+ * - Opcode: `0x82` 
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param timeout Timeout for 15.625us. 0 = wait, 0xFFFFFE = 262.1 secs, 0xFFFFFF = continuous)
  */
-void setRx(spi_device_handle_t spi, gpio_num_t busy, uint32_t timeout);
+void setRx(spi_device_handle_t spi, gpio_num_t busy_pin, uint32_t timeout);
 
 /**
- * 0x86 - SetRFFrequency
+ * @brief Set Chip in Tx mode
+ * 
+ * - Command: `SetTx`
+ * 
+ * - Opcode: `0x83` 
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param timeout Timeout for 15.625us. 0 = wait, 0xFFFFFF = 262.1 secs)
+ */
+void setTx(spi_device_handle_t spi, gpio_num_t busy_pin, uint32_t timeout);
+
+/**
+ * @brief Set the RF frequency of the radio
+ * 
+ * - Command: `SetRfFrequency`
+ * 
+ * - Opcode: `0x86` 
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param rffreq Frequency in Hz
  */
-void setRfFrequency(spi_device_handle_t spi, gpio_num_t busy, uint32_t rffreq);
+void setRfFrequency(spi_device_handle_t spi, gpio_num_t busy_pin, uint32_t rffreq);
 
 /**
- * 0x8A - SetPacketType - Sets the mode of operation
+ * @brief Select the packet type corresponding to the modem
+ * 
+ * - Command: `SetPacketType`
+ * 
+ * - Opcode: `0x8A`
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param packet_type Use GFSK, LoRA or Long Range FHSS
  */
-void setPacketType(spi_device_handle_t spi, gpio_num_t busy, uint8_t packet_type);
+void setPacketType(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t packet_type);
 
 /**
- * 0x8B - SetModulationParams - Set the modulation parameters
+ * @brief Compute and set values in selected protocol modem for given modulation parameters
+ * 
+ * - Command: `SetModulationParams`
+ * 
+ * - Opcode: `0x8B` 
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param bitrate Transmission speed in bits/sec
  * @param pulseshape Predefined transmission gaussian pulseshapes
  * @param rx_bw Predefined reception bandwidth
  * @param freqdev Frequency deviation. Usually proportional to bitrate
  */
-void setModulationParams(spi_device_handle_t spi, gpio_num_t busy, uint32_t bitrate, uint8_t pulseshape, uint8_t rx_bw, uint32_t freqdev);
+void setModulationParams(spi_device_handle_t spi, gpio_num_t busy_pin, uint32_t bitrate, uint8_t pulseshape, uint8_t rx_bw, uint32_t freqdev);
 
 /**
- * 0x8C - SetDIOIRQParams - Set DIO IRQ Parameters
+ * @brief Set values on selected protocol modem for given packet parameters
+ * 
+ * - Command: `SetPacketParams`
+ * 
+ * - Opcode: `0x8C`
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param tx_preamble Transmit preamble size in bits
  * @param rx_preamble Preset preamble. Must be less than syncword.
  * @param syncword_bits Syncword size in bits
@@ -502,30 +624,95 @@ void setModulationParams(spi_device_handle_t spi, gpio_num_t busy, uint32_t bitr
  * @param crc_type Selects the CRC type
  * @param whitening Disables / Enables whitening
  */
-void setPacketParams(spi_device_handle_t spi, gpio_num_t busy, uint16_t tx_preamble, uint8_t rx_preamble, uint8_t syncword_bits, uint8_t addr_filter, uint8_t len_type, uint8_t len_bytes, uint8_t crc_type, uint8_t whitening);
+void setPacketParams(spi_device_handle_t spi, gpio_num_t busy_pin, uint16_t tx_preamble, uint8_t rx_preamble, uint8_t syncword_bits, uint8_t addr_filter, uint8_t len_type, uint8_t len_bytes, uint8_t crc_type, uint8_t whitening);
 
 /**
- * 0x97 - SetDIO3AsTCXOCtrl - Use DIO3 for TCXO power
+ * @brief Set output power and ramp time for the PA
+ * 
+ * - Command: `SetTxParams`
+ * 
+ * - Opcode: `0x8E`
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param power Output power in dB from -17 (0xEF) through to +14 (0x16) 
+ * @param ramptime Predefined ramp time setting
+ * 
+ * @warning READ DATASHEET SECTIONS 13.1.14 (SetPaConfig) AND 13.4.4 (SetTxParams) FIRST!
+ */
+void setTxParams(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t power, uint8_t ramptime);
+
+/**
+ * @brief Store TX and RX base address in register of selected protocol modem
+ * 
+ * - Command: `SetBufferBaseAddress`
+ * 
+ * - Opcode: `0x8F`
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param tx_addr TX base address in buffer
+ * @param rx_addr RX base address in buffer
+ */
+void setBufferBaseAddress(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t tx_addr, uint8_t rx_addr);
+
+/**
+ * @brief Configure duty cycle, max output power, device for the PA for SX1261 or SX1262
+ * 
+ * - Command: `SetPaConfig`
+ * 
+ * - Opcode: `0x95`
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param dutycycle Set the duty cycle of the power amplifier
+ * @param hpmax Set maximum power (0x00 to 0x07 on the SX1262 / no effect on SX1261)
+ * @param device Set the device: 0 = SX1262, 1 = SX1261
+ * @warning READ DATASHEET SECTIONS 13.1.14 (SetPaConfig) AND 13.4.4 (SetTxParams) FIRST!
+ */
+void setPaConfig(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t dutycycle, uint8_t hpmax, uint8_t device);
+
+/**
+ * @brief Configure the radio to use a TCXO controlled by DIO3
+ * 
+ * - Command: `SetDIO3AsTcxoCtrl`
+ * 
+ * - Opcode: `0x97`
+ * 
+ * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param voltage Predefined voltage profile
  * @param delay Wait for voltage increase in 15.625us increments (max 1 sec / 0xFFFF)
+ * 
+ * 
  */
-void setDio3AsTCXOCtrl(spi_device_handle_t spi, gpio_num_t busy, uint8_t voltage, uint16_t delay);
+void setDio3AsTCXOCtrl(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t voltage, uint16_t delay);
 
 /**
- * 0x9D - SetDIO2AsRfSwitchCtrl - DIO2 controls the RF switch for TX, RX, etc
+ * @brief Configure radio to control an RF switch from DIO2
+ * 
+ * - Command: `SetDIO2AsRfSwitchCtrl`
+ * 
+ * - Opcode: `0x9D`
  * 
  * @param spi SPI Handle
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
  * @param enable DIO2 controls RF switch operation
+ *  
  */
-void setDio2AsRfSwitchCtrl(spi_device_handle_t spi, gpio_num_t busy, uint8_t enable);
+void setDio2AsRfSwitchCtrl(spi_device_handle_t spi, gpio_num_t busy_pin, uint8_t enable);
 
 /**
- * 0xC0 - GetStatus - Get the status with some output
+ * @brief Returns the current status of the device
+ * 
+ * - Command: `GetStatus`
+ * 
+ * - Opcode: `0xC0`
  * 
  * @param spi SPI Handle
- * @param verbose Boolean flag to ask for printf() output
- * @return `uint8_t` Status output
+ * @param busy_pin GPIO pin used to indicate the status of the internal state machine
+ * @param verbose Boolean flag to perform printf() output
+ * @return `uint8_t` -
+ * Status(7:0)
  */
-uint8_t getStatus(spi_device_handle_t spi, gpio_num_t busy, bool verbose);
+uint8_t getStatus(spi_device_handle_t spi, gpio_num_t busy_pin, bool verbose);
